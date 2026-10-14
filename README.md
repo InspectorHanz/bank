@@ -300,20 +300,26 @@ status-management control, and a bank-wide transaction browser.
   attempt to `login_attempts` (audit trail) but nothing currently checks that
   table — there is no lockout or rate limit on either login form. This is the
   Phase 7 brute-force demonstration point.
-- **Session cookie `Secure` flag is intentionally disabled** (`includes/session.php`)
-  — hard-coded `false` instead of auto-detected from the connection, so the
-  session cookie also travels over plain HTTP. This is the Phase 7
-  man-in-the-middle demonstration point: anyone intercepting that traffic
-  (sslstrip-style MITM, or sniffing the local/LAN copy) can read the cookie and
-  hijack the session. Note the `.htaccess` security headers (HSTS included)
-  only apply on Apache/Hostinger — they are not sent at all on the Vercel
-  deployment, which has no equivalent config in this repo.
+- **Session cookie `SameSite` is intentionally `None` (`includes/session.php`),
+  paired with `Secure=true`.** Earlier in Phase 7 this cookie's `Secure` flag
+  was hard-coded `false` as a MITM-over-plain-HTTP demo; that isn't exploitable
+  against an HTTPS-only host (no plaintext connection exists to intercept), so
+  the live demo target is now CSRF instead — see the next bullet. Note the
+  `.htaccess` security headers (HSTS included) only apply on Apache/Hostinger —
+  they are not sent at all on the Vercel deployment, which has no equivalent
+  config in this repo.
 - **CSRF: money movement is protected; the profile update is not (by design).**
   Deposit/withdraw/transfer carry a CSRF token from the outset because they are
   financial actions. The profile-settings update is deliberately left *without*
   a token as the designated, controlled CSRF demonstration point — the roadmap
-  explicitly says the CSRF demo must not target a financial action. The
-  hardening phase applies the same `csrf.php` helper to the profile form.
+  explicitly says the CSRF demo must not target a financial action. Note that a
+  missing token alone isn't enough to exploit this in a modern browser: the
+  `SameSite=Lax` default already blocks a forged cross-site POST from carrying
+  the session cookie. The cookie above is set to `SameSite=None` (which
+  requires `Secure=true`) specifically so the PoC at
+  `security-tests/csrf_poc.html` demonstrates a real, working bypass rather
+  than a silently-blocked one. The hardening phase restores `SameSite=Lax`
+  and/or applies the same `csrf.php` helper used by the money-movement forms.
 - **Audit trail:** profile changes, password changes and admin actions are
   written to `audit_logs` via `log_audit()`.
 

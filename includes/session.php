@@ -5,21 +5,28 @@
  * Starts a PHP session with cookie parameters.
  *
  *   - HttpOnly  : JavaScript cannot read the session cookie
- *   - Secure    : INTENTIONALLY DISABLED — Phase 7 MITM demonstration point
- *   - SameSite  : 'Lax' — sensible default that still allows normal navigation
+ *   - Secure    : true — required for SameSite=None to be honoured at all (see below)
+ *   - SameSite  : INTENTIONALLY 'None' — Phase 7 CSRF demonstration point
  *
- * MITM DEMONSTRATION (Phase 7): the cookie's `Secure` attribute is hard-coded
- * false instead of being auto-detected from the connection's scheme, so the
- * session cookie is sent over a plain-HTTP connection too. Anyone who can
- * observe that traffic (e.g. a classic sslstrip-style MITM on the same
- * network, or sniffing the local XAMPP/LAN copy) can read the session cookie
- * and hijack the login. The hardened counterpart restores the auto-detected
- * `secure` flag below (kept here, commented out, so the two can be compared).
- * See README "Security notes" / plan.md Phase 7.
+ * CSRF DEMONSTRATION (Phase 7): customer/profile.php's "personal details" form
+ * has no CSRF token by design (see that file's docblock) — but a missing token
+ * alone no longer gets you a working CSRF demo in a modern browser, because the
+ * `SameSite=Lax` default already blocks the session cookie from being attached
+ * to a cross-site POST (Lax only allows cross-site *GET* top-level navigation).
+ * Setting SameSite explicitly to 'None' removes that extra, incidental layer of
+ * protection so a forged cross-origin <form method="POST"> (see
+ * security-tests/csrf_poc.html) actually carries the victim's session cookie,
+ * same as it would have before browsers started defaulting cookies to Lax.
+ * `Secure=true` is required here — browsers silently reject `SameSite=None`
+ * cookies that aren't also `Secure` — which is fine since the deployment
+ * target is HTTPS-only. The hardened counterpart restores `SameSite=Lax` (or
+ * adds a CSRF token to the form, or both). See README "Security notes" /
+ * plan.md Phase 7.
  *
- * $isHttps = (!empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off')
- *     || (($_SERVER['SERVER_PORT'] ?? null) == 443)
- *     || (strtolower((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https');
+ * Note: this repo's earlier MITM-over-plain-HTTP demo (hard-coding `Secure`
+ * false) is superseded here — it isn't exploitable against an HTTPS-only host
+ * anyway (there is no plaintext connection to intercept), so that cookie knob
+ * is now used for the CSRF demo instead. See README for the current status.
  */
 
 declare(strict_types=1);
@@ -31,8 +38,8 @@ if (session_status() === PHP_SESSION_NONE) {
         'lifetime' => 0,
         'path'     => '/',
         'httponly' => true,
-        'secure'   => false, // Phase 7 MITM demo — see comment above.
-        'samesite' => 'Lax',
+        'secure'   => true,   // required for 'samesite' => 'None' below to be honoured
+        'samesite' => 'None', // Phase 7 CSRF demo — see comment above.
     ]);
 
     session_name(SESSION_NAME);
