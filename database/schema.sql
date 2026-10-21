@@ -20,6 +20,7 @@ CREATE DATABASE IF NOT EXISTS `aurelia_bank`
 USE `aurelia_bank`;
 
 -- Drop in dependency order so the script is re-runnable during development.
+DROP TABLE IF EXISTS `auth_throttle`;
 DROP TABLE IF EXISTS `audit_logs`;
 DROP TABLE IF EXISTS `login_attempts`;
 DROP TABLE IF EXISTS `transactions`;
@@ -100,9 +101,8 @@ CREATE TABLE `transactions` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
--- login_attempts — records every authentication attempt.
--- Used later for the brute-force demonstration and its hardened remediation
--- (rate limiting / temporary lockout).
+-- login_attempts — records every authentication attempt (audit trail /
+-- evidence). Enforcement lives in `auth_throttle` below.
 -- -----------------------------------------------------------------------------
 CREATE TABLE `login_attempts` (
     `id`           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -110,6 +110,7 @@ CREATE TABLE `login_attempts` (
     `ip_address`   VARCHAR(45)  DEFAULT NULL,       -- IPv4/IPv6 (INET6-capable width)
     `user_agent`   VARCHAR(255) DEFAULT NULL,
     `successful`   TINYINT(1) NOT NULL DEFAULT 0,
+    `throttled`    TINYINT(1) NOT NULL DEFAULT 0,   -- refused by rate limiting (password not checked)
     `attempted_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),
     KEY `idx_attempts_username_time` (`username`, `attempted_at`),
@@ -133,4 +134,26 @@ CREATE TABLE `audit_logs` (
     CONSTRAINT `fk_audit_user`
         FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)
         ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- auth_throttle — brute-force rate-limit counters (includes/throttle.php).
+-- One row per (scope, kind, subject), e.g. login attempts for one username from
+-- one IP. Lives in the database so every app instance shares it, and is updated
+-- under row locks so concurrent requests cannot race past a limit.
+-- Times are unix timestamps (app clock) so the cooldown maths stays in PHP.
+-- -----------------------------------------------------------------------------
+CREATE TABLE `auth_throttle` (
+    `throttle_key`       CHAR(64)         NOT NULL,   -- SHA-256(scope, kind, subject)
+    `scope`              VARCHAR(32)      NOT NULL,   -- login | password_change | email_change | register
+    `kind`               VARCHAR(16)      NOT NULL,   -- account | ip | account_ip | ip_new_account
+    `completed`          INT UNSIGNED     NOT NULL DEFAULT 0,   -- counted outcomes this window (failures, or successes for quotas)
+    `pending`            INT UNSIGNED     NOT NULL DEFAULT 0,   -- reserved attempts not resolved yet
+    `pending_expires_at` INT UNSIGNED     DEFAULT NULL,         -- after this, pending counts as completed
+    `window_started_at`  INT UNSIGNED     NOT NULL,
+    `locked_until`       INT UNSIGNED     DEFAULT NULL,         -- end of current/last cooldown
+    `lock_level`         TINYINT UNSIGNED NOT NULL DEFAULT 0,   -- consecutive cooldowns (escalation)
+    `updated_at`         INT UNSIGNED     NOT NULL,
+    PRIMARY KEY (`throttle_key`),
+    KEY `idx_throttle_updated` (`updated_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

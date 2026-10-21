@@ -165,7 +165,7 @@ require __DIR__ . '/includes/header.php';
                 </div>
                 <div class="sys-status__item">
                     <p class="stat-card__label">Tables found</p>
-                    <p class="stat-card__value"><?= (int) $status['table_count'] ?> / 5</p>
+                    <p class="stat-card__value"><?= (int) $status['table_count'] ?> / 6</p>
                 </div>
             </div>
             <?php if (!$status['db_ok']): ?>
@@ -174,10 +174,10 @@ require __DIR__ . '/includes/header.php';
                     Check <code>config/config.local.php</code> and import
                     <code>database/schema.sql</code>.
                 </div>
-            <?php elseif ($status['table_count'] < 5): ?>
+            <?php elseif ($status['table_count'] < 6): ?>
                 <div class="alert alert--info" style="margin-top:1.25rem;">
-                    Connected, but only <?= (int) $status['table_count'] ?> of 5 expected tables
-                    were found. Import <code>database/schema.sql</code> to create them.
+                    Connected, but only <?= (int) $status['table_count'] ?> of 6 expected tables
+                    were found. Import <code>database/schema.sql</code> (or run <code>database/migrations/</code>) to create them.
                 </div>
             <?php else: ?>
                 <div class="alert alert--success" style="margin-top:1.25rem;">
