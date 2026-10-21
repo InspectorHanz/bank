@@ -79,12 +79,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $profileErrors['address'] = 'Address is too long (max 255 characters).';
         }
 
-        // Email must be unique across other users.
-        if (!isset($profileErrors['email'])) {
-            $chk = db()->prepare('SELECT id FROM users WHERE email = :email AND id <> :id LIMIT 1');
-            $chk->execute([':email' => $email, ':id' => $userId]);
-            if ($chk->fetch() !== false) {
-                $profileErrors['email'] = 'That email address is already in use.';
+        // Email must be unique across other users. "Already in use" confirms
+        // that some other customer has that address, so the check only runs
+        // when it is needed (everything else valid, address actually changing)
+        // and those probes are rate-limited per account and per client IP.
+        if (!$profileErrors && strcasecmp($email, (string) $record['email']) !== 0) {
+            $ticket = throttle_reserve('email_change', [
+                'account' => 'user:' . $userId,
+                'ip'      => throttle_ip_subject(client_ip()),
+            ]);
+            if (!$ticket['allowed']) {
+                send_throttle_headers($ticket['retry_after']);
+                $profileErrors['email'] = throttle_message($ticket['retry_after'], 'email address changes');
+            } else {
+                $chk = db()->prepare('SELECT id FROM users WHERE email = :email AND id <> :id LIMIT 1');
+                $chk->execute([':email' => $email, ':id' => $userId]);
+                if ($chk->fetch() !== false) {
+                    throttle_failure($ticket, $userId);
+                    $profileErrors['email'] = 'That email address is already in use.';
+                } else {
+                    throttle_success($ticket);
+                }
             }
         }
 
@@ -120,8 +135,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $new     = (string) ($_POST['new_password'] ?? '');
         $confirm = (string) ($_POST['confirm_password'] ?? '');
 
-        if ($current === '' || !password_verify($current, $record['password_hash'])) {
+        // Re-checking the current password is itself a guessing oracle (e.g. for
+        // someone holding a stolen session), so it is throttled per account.
+        if ($current === '') {
             $passwordErrors['current_password'] = 'Your current password is incorrect.';
+        } else {
+            $ticket = throttle_reserve('password_change', ['account' => 'user:' . $userId]);
+            if (!$ticket['allowed']) {
+                send_throttle_headers($ticket['retry_after']);
+                $passwordErrors['current_password'] = throttle_message($ticket['retry_after'], 'incorrect password attempts');
+            } elseif (password_verify($current, $record['password_hash'])) {
+                throttle_success($ticket);
+            } else {
+                throttle_failure($ticket, $userId);
+                $passwordErrors['current_password'] = 'Your current password is incorrect.';
+            }
         }
         if (mb_strlen($new) < 8) {
             $passwordErrors['new_password'] = 'New password must be at least 8 characters.';

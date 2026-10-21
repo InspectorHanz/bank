@@ -16,6 +16,14 @@
  * (No CSRF token here, consistent with the login form: a forged registration
  * creates an account the attacker controls, which is not a meaningful attack.
  * The money-movement forms are the ones that carry CSRF tokens.)
+ *
+ * The "username already taken" / "email already registered" answers
+ * necessarily reveal that an account exists. To keep that from becoming a free
+ * enumeration tool (includes/throttle.php, scope 'register'):
+ *   - they are only given for an otherwise valid submission — so every probe
+ *     either fails (spending the per-IP failed-submission budget) or really
+ *     opens an account (spending the per-IP new-account quota);
+ *   - both budgets are per client IP; neither is refunded by the other.
  */
 
 declare(strict_types=1);
@@ -29,6 +37,55 @@ if (is_logged_in()) {
     redirect(role_home(current_user_role()));
 }
 
+/**
+ * Server-side format validation for the registration form (no database
+ * lookups — see registration_conflicts()).
+ *
+ * @return array<string,string>  field => error message (empty when valid)
+ */
+function validate_registration(
+    string $fullName, string $username, string $email, string $phone, string $password, string $confirm
+): array {
+    $errors = [];
+    if ($fullName === '' || mb_strlen($fullName) < 2 || mb_strlen($fullName) > 120) {
+        $errors['full_name'] = 'Please enter your full name (2–120 characters).';
+    }
+    if (!preg_match('/^[a-zA-Z0-9._]{3,50}$/', $username)) {
+        $errors['username'] = 'Username must be 3–50 characters: letters, numbers, dot or underscore.';
+    }
+    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL) || mb_strlen($email) > 255) {
+        $errors['email'] = 'Please enter a valid email address.';
+    }
+    if ($phone !== '' && !preg_match('/^[0-9 +()\-]{6,30}$/', $phone)) {
+        $errors['phone'] = 'Please enter a valid phone number.';
+    }
+    if (mb_strlen($password) < 8) {
+        $errors['password'] = 'Password must be at least 8 characters.';
+    }
+    if ($password !== $confirm) {
+        $errors['confirm_password'] = 'The passwords do not match.';
+    }
+    return $errors;
+}
+
+/**
+ * Uniqueness checks. Only called for an otherwise valid submission, so that
+ * an "already taken" answer always costs a failed (rate-limited) attempt.
+ *
+ * @return array<string,string>
+ */
+function registration_conflicts(string $username, string $email): array
+{
+    $errors = [];
+    if (username_exists($username)) {
+        $errors['username'] = 'That username is already taken.';
+    }
+    if (email_exists($email)) {
+        $errors['email'] = 'That email address is already registered.';
+    }
+    return $errors;
+}
+
 $errors = [];
 // Sticky values (never echo the password back).
 $fullName = trim((string) ($_POST['full_name'] ?? ''));
@@ -40,27 +97,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $password = (string) ($_POST['password'] ?? '');
     $confirm  = (string) ($_POST['confirm_password'] ?? '');
 
-    if ($fullName === '' || mb_strlen($fullName) < 2 || mb_strlen($fullName) > 120) {
-        $errors['full_name'] = 'Please enter your full name (2–120 characters).';
-    }
-    if (!preg_match('/^[a-zA-Z0-9._]{3,50}$/', $username)) {
-        $errors['username'] = 'Username must be 3–50 characters: letters, numbers, dot or underscore.';
-    } elseif (username_exists($username)) {
-        $errors['username'] = 'That username is already taken.';
-    }
-    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL) || mb_strlen($email) > 255) {
-        $errors['email'] = 'Please enter a valid email address.';
-    } elseif (email_exists($email)) {
-        $errors['email'] = 'That email address is already registered.';
-    }
-    if ($phone !== '' && !preg_match('/^[0-9 +()\-]{6,30}$/', $phone)) {
-        $errors['phone'] = 'Please enter a valid phone number.';
-    }
-    if (mb_strlen($password) < 8) {
-        $errors['password'] = 'Password must be at least 8 characters.';
-    }
-    if ($password !== $confirm) {
-        $errors['confirm_password'] = 'The passwords do not match.';
+    // Throttled clients skip validation entirely (it would answer "is this taken?").
+    $ip = throttle_ip_subject(client_ip());
+    $ticket = throttle_reserve('register', ['ip' => $ip, 'ip_new_account' => $ip]);
+    if (!$ticket['allowed']) {
+        send_throttle_headers($ticket['retry_after']);
+        $errors['form'] = in_array('ip_new_account', $ticket['denied'], true)
+            ? 'Too many accounts have been opened from your network recently. Please wait '
+              . format_wait($ticket['retry_after']) . ' and try again.'
+            : throttle_message($ticket['retry_after'], 'registration attempts');
+    } else {
+        $errors = validate_registration($fullName, $username, $email, $phone, $password, $confirm)
+            ?: registration_conflicts($username, $email);
     }
 
     if (!$errors) {
@@ -78,6 +126,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $account = open_account_for_user($userId, 'checking');
 
             $pdo->commit();
+            throttle_success($ticket);
 
             log_audit($userId, 'auth.register', 'New customer registered; opened account ' . $account['account_number']);
 
@@ -97,6 +146,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             error_log('[Aurelia Bank] Registration failed: ' . $e->getMessage());
             $errors['form'] = 'We could not complete your registration. Please try again.';
         }
+    }
+
+    if ($errors) {
+        throttle_failure($ticket);   // no-op when the attempt was throttled
     }
 }
 
