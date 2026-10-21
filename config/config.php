@@ -54,6 +54,17 @@ define('APP_NAME', 'Aurelia Bank');
 define('APP_TAGLINE', 'Banking made brilliantly simple.');
 define('SESSION_NAME', 'AURELIA_SESSION');
 
+// -----------------------------------------------------------------------------
+// Reverse proxies (used by client_ip() for rate limiting and audit logs)
+// -----------------------------------------------------------------------------
+// Comma-separated IPs/CIDRs of proxies allowed to report the client address via
+// TRUSTED_PROXY_HEADER. Empty (the default) = trust no one and use REMOTE_ADDR,
+// which is correct when PHP sees clients directly (XAMPP, plain Hostinger).
+// '*' trusts whatever peer connects — ONLY for platforms that overwrite the
+// header themselves (e.g. Vercel). Never set it on a host clients reach directly.
+if (!defined('TRUSTED_PROXIES'))      define('TRUSTED_PROXIES', getenv('TRUSTED_PROXIES') ?: '');
+if (!defined('TRUSTED_PROXY_HEADER')) define('TRUSTED_PROXY_HEADER', getenv('TRUSTED_PROXY_HEADER') ?: 'X-Forwarded-For');
+
 // Optional explicit web base path (e.g. '/aurelia-bank'). Leave undefined to let
 // includes/functions.php auto-detect it from DOCUMENT_ROOT. Define it in
 // config.local.php only if auto-detection does not match your setup.

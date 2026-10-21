@@ -13,6 +13,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/functions.php';
 
 /**
  * Write an audit entry.
@@ -32,7 +33,7 @@ function log_audit(?int $userId, string $action, ?string $details = null): void
             ':uid'     => $userId,
             ':action'  => mb_substr($action, 0, 80),
             ':details' => $details !== null ? mb_substr($details, 0, 2000) : null,
-            ':ip'      => $_SERVER['REMOTE_ADDR'] ?? null,
+            ':ip'      => client_ip(),
         ]);
     } catch (Throwable $e) {
         error_log('[Aurelia Bank] Failed to write audit log: ' . $e->getMessage());
