@@ -19,6 +19,9 @@
  *     exist or which portal they belong to.
  *   - session_regenerate_id() on success (session-fixation protection).
  *   - Account status checked (locked/disabled accounts cannot sign in).
+ *   - Brute-force throttling inside authenticate() (includes/throttle.php):
+ *     repeated failures earn temporary, escalating cooldowns, answered with
+ *     HTTP 429 + Retry-After and a "please wait N minutes" message.
  */
 
 declare(strict_types=1);
@@ -53,6 +56,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (!$result['ok']) {
             $formError = $result['error'];
+            if (!empty($result['throttled'])) {
+                send_throttle_headers($result['retry_after']);
+            }
         } else {
             $user = $result['user'];
 

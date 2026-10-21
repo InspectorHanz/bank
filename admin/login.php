@@ -9,7 +9,8 @@
  *
  * It authenticates ADMIN accounts only: a customer credential entered here fails
  * with the same generic message as a wrong password (no cross-portal
- * enumeration). It shares the authenticate() helper with the customer login.
+ * enumeration). It shares the authenticate() helper — and therefore the same
+ * brute-force throttle budget — with the customer login.
  */
 
 declare(strict_types=1);
@@ -41,6 +42,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (!$result['ok']) {
             $formError = $result['error'];
+            if (!empty($result['throttled'])) {
+                send_throttle_headers($result['retry_after']);
+            }
         } else {
             login_user($result['user']);
 
