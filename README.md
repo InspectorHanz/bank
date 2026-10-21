@@ -47,6 +47,7 @@ aurelia-bank/
 │   ├── banking.php         # Accounts, transactions, money movement, admin
 │   ├── csrf.php            # CSRF token helpers (money-movement forms)
 │   ├── audit.php           # Audit-log helper (log_audit)          (Phase 5–6)
+│   ├── throttle.php        # Brute-force rate limiting / cooldowns  (Phase 9)
 │   ├── functions.php       # Shared helpers (e(), base_url(), money, pagination)
 │   ├── header.php          # Common header / top navigation (auth-aware)
 │   ├── footer.php          # Common footer
@@ -55,6 +56,7 @@ aurelia-bank/
 │   ├── schema.sql          # Database structure (Phase 1)
 │   ├── seed_users.php      # Dev seeder: fictional test users       (Phase 2)
 │   ├── seed_banking.php    # Dev seeder: accounts + transactions    (Phase 3–6)
+│   ├── migrations/         # One-off upgrades for existing databases
 │   └── .htaccess           # Denies direct web access
 ├── auth/
 │   ├── register.php        # Open an account (creates user + account)
@@ -109,7 +111,7 @@ aurelia-bank/
 3. **Create the database** by importing the schema:
    - Open <http://localhost/phpmyadmin>
    - *Import* → choose `database/schema.sql` → *Go*
-   - This creates the `aurelia_bank` database and its 5 tables.
+   - This creates the `aurelia_bank` database and its 6 tables.
 
    *(CLI alternative:)*
    ```bash
@@ -147,8 +149,8 @@ panel at the bottom. Confirm:
 - **PHP version** is shown (8.0+).
 - **Environment** = `development`.
 - **Database** shows a green dot and “Connected”.
-- **Tables found** = **5 / 5** (`users`, `accounts`, `transactions`,
-  `login_attempts`, `audit_logs`).
+- **Tables found** = **6 / 6** (`users`, `accounts`, `transactions`,
+  `login_attempts`, `audit_logs`, `auth_throttle`).
 - A green “Foundation looks good” message appears.
 
 Also check:
@@ -243,9 +245,9 @@ later add rate limiting.
 - **Secure defaults now:** `password_verify()` against a bcrypt hash;
   `session_regenerate_id()` on login (fixation protection); generic auth errors
   (no user enumeration); POST-only logout; account `status` checked.
-- **Deliberately deferred:** login attempts are *recorded but not throttled*.
-  Rate limiting / temporary lockout is introduced later as the **hardened**
-  counterpart, so the vulnerable vs. hardened login can be compared directly.
+- **Brute-force throttling** was deliberately deferred to the hardening phase
+  so the vulnerable vs. hardened login could be compared — it is now in place;
+  see [Brute-force hardening](#brute-force-hardening-phase-9).
   CSRF tokens are introduced with the profile/settings work (their designated
   demonstration point), keeping each phase's security topic isolated.
 
@@ -296,10 +298,13 @@ status-management control, and a bank-wide transaction browser.
   *Phase 7 SQL-injection demonstration point*: that single clause concatenates
   the search term into the query instead of binding it. Every other filter,
   and every other query in the app, still uses bound parameters.
-- **Brute force is intentionally unthrottled.** `authenticate()` records every
-  attempt to `login_attempts` (audit trail) but nothing currently checks that
-  table — there is no lockout or rate limit on either login form. This is the
-  Phase 7 brute-force demonstration point.
+- **Brute force: hardened (Phase 9).** The Phase 7 demonstration point was an
+  unthrottled `authenticate()` — every attempt was recorded to
+  `login_attempts`, but nothing checked it. Both login forms (and the other
+  password-guessing surfaces) are now rate-limited; see
+  [Brute-force hardening](#brute-force-hardening-phase-9). The vulnerable
+  version remains in git history (commit `dd148e9` and earlier) for the
+  before/after comparison.
 - **Session cookie `SameSite` is intentionally `None` (`includes/session.php`),
   paired with `Secure=true`.** Earlier in Phase 7 this cookie's `Secure` flag
   was hard-coded `false` as a MITM-over-plain-HTTP demo; that isn't exploitable
@@ -326,6 +331,184 @@ status-management control, and a bank-wide transaction browser.
 > Note: with native prepared statements (`EMULATE_PREPARES = false`) a named
 > placeholder may only appear once per query, so multi-column `LIKE` searches
 > bind the term to several distinct placeholders (see `banking.php`).
+
+---
+
+## Brute-force hardening (Phase 9)
+
+Implemented in `includes/throttle.php`, called from the shared `authenticate()`
+helper (so both portals are covered and share one budget) and from the
+password-change, profile-email and registration forms.
+
+### What is limited
+
+| Surface | Counter | Limit | Stops |
+|---|---|---|---|
+| Customer + staff login | username + client IP | 5 failures / 15 min | one client guessing one account |
+| Customer + staff login | username (any IP) | 10 failures / 15 min | a distributed attack on one account |
+| Customer + staff login | client IP (any user) | 20 failures / 15 min | password spraying across accounts |
+| Profile → change password | signed-in account | 5 wrong current passwords / 15 min | guessing from a stolen session |
+| Profile → change email | signed-in account / client IP | 5 / 10 "already in use" answers per hour | probing which emails are registered |
+| Open an account | client IP | 10 failed submissions / 15 min | probing which usernames/emails exist |
+| Open an account | client IP | 10 accounts opened / hour | mass automated sign-ups |
+
+Hitting a *failure* limit starts a **temporary cooldown**: 30 s, doubling on
+each consecutive cooldown up to 15 min, resetting after an hour without one.
+There is **no permanent lockout**: every cooldown expires on its own. A
+correct password clears that account's counters (unless a cooldown is already
+running) but never touches the per-IP counter, so an attacker cannot reset
+their IP budget by logging into their own account. The *accounts-opened* quota
+has no cooldown; once used up, it refuses until its hour is over.
+
+**"Already taken / in use" answers** on registration and the profile email
+field are only given for an otherwise valid form, and each one costs a
+rate-limited failure. A probe therefore either spends the failure budget or
+actually opens an account / changes the email, which is limited too.
+
+**Accounts opened per IP — the trade-off.** Successful registrations no longer
+refund their slot; they count against a separate 10-per-hour quota (failures
+have their own budget, so a few typos don't stop someone registering).
+Everyone behind one public IP shares that quota: in a school lab, the 11th
+student to register within the hour is asked to wait (up to an hour, with a
+message saying so). For a sign-up session, raise `ip_new_account` in
+`AUTH_THROTTLE_POLICIES` beforehand. It bounds one IP at 240 accounts a day;
+it does not stop someone with many IPs (that would need CAPTCHA or email
+verification, which this app lacks).
+
+While limited, the form shows *"Too many sign-in attempts. Please wait N
+seconds/minutes and try again."* and the response is **HTTP 429** with a
+`Retry-After` header, so scripted clients get the same answer as the browser.
+The password is not checked at all while limited.
+
+### Why it holds up
+
+- **Server-side, in the shared database.** Not the session (an attacker just
+  drops the cookie) and not process memory (multiple instances, e.g. Vercel
+  functions, would each have their own). Every instance sees the same
+  counters.
+- **Concurrency-safe.** An attempt is booked as *pending* under a row lock
+  (`SELECT … FOR UPDATE`) **before** the password is checked, so a burst of
+  parallel requests cannot all slip past a "not locked yet?" check. In
+  development, 30 truly parallel requests at each limit let exactly 5 / 10 / 20
+  passwords be checked (see [Testing](#testing)).
+- **Pending ≠ failed.** Only *completed* failures start a cooldown, so one
+  wrong password racing nineteen correct ones locks nobody out, and a success
+  never erases a cooldown other requests earned. An attempt that never reports
+  back (fatal error, timeout) is recorded as a failure at shutdown; one left by
+  a killed process counts as consumed after 2 minutes. Both fail safe.
+- **No enumeration.** Unknown and real usernames fail with the same message and
+  are throttled identically. A correct password on a *disabled* account now
+  also gets the generic "Invalid username or password." (it previously
+  confirmed the password was right).
+- **No spelling games.** Usernames are folded with the database's own collation
+  (`WEIGHT_STRING`, trailing pad weights stripped, whole value, no
+  truncation), so `jdoe`, `JDOE`, `jdoé`, `ｊｄｏｅ`, `j<ZWSP>doe` and
+  `jdoe<space><ZWSP>` (all of which log into the same account) share one
+  counter. Input over 255 characters or not valid UTF-8 is never looked up at
+  all, and fails like an unknown username.
+- **No header spoofing.** `X-Forwarded-For` is ignored unless the request comes
+  from a configured trusted proxy (below). Malformed `TRUSTED_PROXIES` entries
+  (e.g. `10.0.0.0/abc`, `10.0.0.0/`) are ignored and logged, never widened
+  to "trust everyone". IPv6 clients are grouped by /64.
+
+### Logging
+
+- `login_attempts`: every login attempt; the new `throttled` column marks the
+  ones refused without a password check. Only the username is stored, never
+  the password.
+- `audit_logs`: one `auth.throttle.cooldown` row each time a cooldown starts
+  (scope, counter kind, level, length, client IP, targeted user id). Logged
+  per cooldown rather than per attempt, so an attack cannot flood it.
+
+### Setup
+
+**Database (required).** A fresh import of `database/schema.sql` already has
+everything. For an existing database, run each migration you have not run yet,
+in order, once:
+
+```bash
+mysql -u <user> -p <database_name> < database/migrations/001_auth_throttle.sql
+mysql -u <user> -p <database_name> < database/migrations/002_auth_throttle_pending.sql
+```
+
+(phpMyAdmin: select the database → *Import* → each file.) 001 adds the
+`auth_throttle` table and the `login_attempts.throttled` column; 002 splits
+the counter into `completed` + `pending`. Without them, logins fail closed
+with an error rather than running unthrottled.
+
+**Trusted proxies (only if PHP sits behind a proxy/CDN).** Set in
+`config/config.local.php` or as environment variables:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `TRUSTED_PROXIES` | *(empty)* | Comma-separated IPs/CIDRs allowed to report the client IP. Empty = use `REMOTE_ADDR` only. |
+| `TRUSTED_PROXY_HEADER` | `X-Forwarded-For` | Header those proxies use, e.g. `CF-Connecting-IP` behind Cloudflare. |
+
+- **XAMPP / plain Hostinger:** leave empty. PHP sees the client directly.
+- **Behind Cloudflare or another CDN:** list that provider's published IP
+  ranges and set its header.
+- **Vercel:** `TRUSTED_PROXIES=*` (trust the platform edge). This is only safe
+  because Vercel sets the forwarding header itself; confirm against Vercel's
+  current docs, and never use `*` where clients can reach PHP directly.
+
+Getting this wrong in the *permissive* direction lets attackers fake a new IP
+per request; in the *strict* direction, every visitor shares the proxy's IP
+and the per-IP limit becomes site-wide.
+
+Thresholds live at the top of `includes/throttle.php`
+(`AUTH_THROTTLE_POLICIES`). On a shared network (e.g. a school lab behind one
+public IP) everyone on it shares the 20-per-IP login limit; raise it there if
+needed.
+
+### Testing
+
+The automated test suite used while building this defence (a `tests/` folder
+run against a throwaway local database) has been **removed from the
+repository**, so there is nothing to run locally. It was never committed, so
+it is not in Git history either.
+
+**Historical results (recorded during development, no longer re-runnable):**
+
+- Run on PHP 8.2.12 and MariaDB 10.4.32 (XAMPP) against a throwaway local
+  database, never the hosted site. The last full run passed 51 / 51. It
+  covered cooldowns and expiry, successful logins, generic error messages,
+  username spelling variants, trusted-proxy parsing, log contents, the real
+  login / register / profile pages over HTTP, and that a profile POST without
+  its CSRF token is still rejected.
+- 30 truly parallel requests at each login limit let exactly 5 / 10 / 20
+  passwords be checked; with the row lock temporarily removed, all 30 got
+  through.
+- Results on MySQL 8 or other MariaDB versions are unknown.
+
+**To check the deployed behaviour yourself** (expected behaviour, per the
+implementation above): submit a wrong password five times for one username.
+The sixth attempt, even with the correct password, shows "Too many sign-in
+attempts. Please wait N seconds and try again." and the browser's network tab
+shows status 429 with a `Retry-After` header. After the wait, the correct
+password logs in. The message is the same for a username that does not exist.
+
+The CSRF checks in `security-tests/` are separate work and still available:
+`security-tests/csrf_test.php` needs only PHP; `security-tests/csrf_e2e_test.php`
+needs the live app and the seeded `aurelia_bank` database and edits a record in
+it, so run it only against an environment you intend to change.
+### Remaining limitations
+
+- Rate limiting slows guessing; it cannot stop an attacker with many IPs
+  trying a few common passwords against many accounts. The real defences
+  against that are strong passwords and MFA, which this app does not have.
+- The per-account limit can be used to keep a specific user in cooldown
+  (up to 15 min at a time, renewable while the attack continues). That is the
+  price of stopping distributed guessing; it is temporary by design.
+- Registration and the profile email field still say "already taken / in
+  use" within their budgets: a legitimate user must be told. Hiding it
+  entirely needs email verification ("if this address is free, we've sent a
+  link"), which this app has no mail system for.
+- Registration now reports a taken username/email only once the rest of the
+  form is valid, so a user with two problems sees them one after the other.
+- `login_attempts` and `audit_logs` have no retention/pruning yet
+  (`auth_throttle` prunes itself).
+- This app has no CAPTCHA, MFA, password-reset or OTP flow, so none is
+  covered here.
 
 ---
 
@@ -362,7 +545,7 @@ isolated** so they can be toggled/reverted, and each has a hardened counterpart.
 | 6 | Administrator area (customers, accounts, transactions) | ✅ Done |
 | 7 | Controlled vulnerabilities (Brute Force / SQLi / CSRF) | ✅ Done |
 | 8 | Security testing documentation | — |
-| 9 | Security hardening (remediated versions) | — |
+| 9 | Security hardening (remediated versions) | 🟡 Brute force done |
 | 10 | Final functional + security testing | — |
 | 11 | Hostinger deployment | — |
 
@@ -372,8 +555,9 @@ isolated** so they can be toggled/reverted, and each has a hardened counterpart.
 
 Academic use only — a classroom pentesting exercise against test/fictional
 data only. This app, including the public Vercel deployment, intentionally
-contains the Phase 7 vulnerabilities described above (unthrottled login,
-concatenated SQL in the transaction search, non-Secure session cookie). Never
+contains the Phase 7 vulnerabilities described above (concatenated SQL in the
+transaction search, the CSRF-exposed profile form; the unthrottled login has
+since been hardened). Never
 point it at real accounts, real personal data, or real money, and never reuse
 this code's login, search-filter, or session-cookie logic in a non-academic
 project without first restoring the bound-parameter / rate-limiting /
