@@ -2,31 +2,26 @@
 /**
  * Aurelia Bank — Session Bootstrap
  * -----------------------------------------------------------------------------
- * Starts a PHP session with cookie parameters.
+ * Starts a PHP session with hardened cookie parameters.
  *
  *   - HttpOnly  : JavaScript cannot read the session cookie
- *   - Secure    : true — required for SameSite=None to be honoured at all (see below)
- *   - SameSite  : INTENTIONALLY 'None' — Phase 7 CSRF demonstration point
+ *   - Secure    : true — cookie is only ever sent over HTTPS
+ *   - SameSite  : 'Lax' — the cookie is NOT attached to cross-site POSTs
  *
- * CSRF DEMONSTRATION (Phase 7): customer/profile.php's "personal details" form
- * has no CSRF token by design (see that file's docblock) — but a missing token
- * alone no longer gets you a working CSRF demo in a modern browser, because the
- * `SameSite=Lax` default already blocks the session cookie from being attached
- * to a cross-site POST (Lax only allows cross-site *GET* top-level navigation).
- * Setting SameSite explicitly to 'None' removes that extra, incidental layer of
- * protection so a forged cross-origin <form method="POST"> (see
- * security-tests/csrf_poc.html) actually carries the victim's session cookie,
- * same as it would have before browsers started defaulting cookies to Lax.
- * `Secure=true` is required here — browsers silently reject `SameSite=None`
- * cookies that aren't also `Secure` — which is fine since the deployment
- * target is HTTPS-only. The hardened counterpart restores `SameSite=Lax` (or
- * adds a CSRF token to the form, or both). See README "Security notes" /
- * plan.md Phase 7.
+ * CSRF HARDENING (Phase 7 — fixed): this is the first of two defence-in-depth
+ * layers against Cross-Site Request Forgery. With `SameSite=Lax`, the browser
+ * refuses to attach this session cookie to a forged cross-site <form
+ * method="POST"> (Lax only allows the cookie on top-level cross-site *GET*
+ * navigations). So the attack in security-tests/csrf_poc.html now arrives at
+ * the server with NO session — the victim is effectively anonymous and the
+ * request is rejected before any state change.
  *
- * Note: this repo's earlier MITM-over-plain-HTTP demo (hard-coding `Secure`
- * false) is superseded here — it isn't exploitable against an HTTPS-only host
- * anyway (there is no plaintext connection to intercept), so that cookie knob
- * is now used for the CSRF demo instead. See README for the current status.
+ * The second layer is the synchroniser CSRF token now required by
+ * customer/profile.php (see includes/csrf.php + that file's POST handler).
+ * Either layer alone stops the attack; together they are defence-in-depth.
+ *
+ * (Previously this was set to 'None' to deliberately re-enable the CSRF demo;
+ * restoring 'Lax' is the hardened counterpart. See README "Security notes".)
  */
 
 declare(strict_types=1);
@@ -38,8 +33,8 @@ if (session_status() === PHP_SESSION_NONE) {
         'lifetime' => 0,
         'path'     => '/',
         'httponly' => true,
-        'secure'   => true,   // required for 'samesite' => 'None' below to be honoured
-        'samesite' => 'None', // Phase 7 CSRF demo — see comment above.
+        'secure'   => true,  // cookie only sent over HTTPS
+        'samesite' => 'Lax', // CSRF defence: not attached to cross-site POSTs
     ]);
 
     session_name(SESSION_NAME);

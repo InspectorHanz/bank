@@ -10,18 +10,19 @@
  * (convenience, in assets/js/app.js), output escaping, prepared statements, and
  * the Post/Redirect/Get pattern so a refresh does not resubmit.
  *
- * DESIGN NOTE — CSRF demonstration point:
- *   The "personal details" update is the state-changing action the later CSRF
- *   demonstration targets. As with the brute-force login, the protective
- *   control (a CSRF token + stricter SameSite) is added as the *hardened*
- *   counterpart in the security phase, so the before/after can be compared. It
- *   is intentionally absent here and clearly documented — not an oversight.
- *   (The session cookie is already SameSite=Lax as a clean baseline.)
+ * CSRF HARDENING (Phase 7 — fixed):
+ *   The "personal details" (and password) updates are state-changing actions
+ *   that were the CSRF demonstration target. They are now protected with a
+ *   synchroniser CSRF token (see includes/csrf.php): every POST must carry the
+ *   session's token, and a forged cross-site request cannot read it. Combined
+ *   with the SameSite=Lax session cookie (see includes/session.php), the attack
+ *   in security-tests/csrf_poc.html no longer works.
  */
 
 declare(strict_types=1);
 
 require_once __DIR__ . '/../includes/bootstrap.php';
+require_once __DIR__ . '/../includes/csrf.php';
 require_once __DIR__ . '/../includes/audit.php';
 
 require_role('customer');
@@ -46,6 +47,14 @@ $phone    = (string) ($record['phone'] ?? '');
 $address  = (string) ($record['address'] ?? '');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // CSRF defence: reject any POST that does not carry the session's token.
+    // A forged cross-site request cannot read this token, so it is stopped here
+    // before any database update happens.
+    if (!csrf_verify()) {
+        set_flash('error', 'Your session has expired or the request could not be verified. Please try again.');
+        redirect('customer/profile.php');
+    }
+
     $form = (string) ($_POST['form'] ?? '');
 
     // -------------------------------------------------------------------------
@@ -159,6 +168,7 @@ require __DIR__ . '/../includes/header.php';
                 <h2 class="card__title mt-0">Personal details</h2>
 
                 <form method="post" action="<?= e(base_url('customer/profile.php')) ?>" novalidate data-validate>
+                    <?= csrf_field() ?>
                     <input type="hidden" name="form" value="profile">
 
                     <div class="form-group">
@@ -214,6 +224,7 @@ require __DIR__ . '/../includes/header.php';
                 <h2 class="card__title mt-0">Change password</h2>
 
                 <form method="post" action="<?= e(base_url('customer/profile.php')) ?>" novalidate data-validate>
+                    <?= csrf_field() ?>
                     <input type="hidden" name="form" value="password">
 
                     <div class="form-group">
